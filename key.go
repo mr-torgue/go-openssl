@@ -145,38 +145,43 @@ func (key *pKey) BaseType() NID {
 	return NID(C.EVP_PKEY_get_base_id(key.key))
 }
 
+// getAlgorithmInfo returns if it uses a digest function.
+//func (key *pKey) getAlgorithmInfo() (bool, int) {
+//
+//}
+
 func (key *pKey) SignPKCS1v15(digest *Digest, data []byte) ([]byte, error) {
 
 	ctx := C.EVP_MD_CTX_new()
 	defer C.EVP_MD_CTX_free(ctx)
 
-	if key.KeyType() == KeyTypeED25519 {
+	if digest == nil {
 		// do ED specific one-shot sign
-		if digest != nil {
-			return nil, errors.New("signpkcs1v15: digest must be null")
-		}
 		if len(data) == 0 {
 			return nil, errors.New("signpkcs1v15: 0-length data or non-null digest")
 		}
 
 		if C.EVP_DigestSignInit(ctx, nil, nil, nil, key.key) != 1 {
-			return nil, errorFromErrorQueue()
+			return nil, fmt.Errorf("failed to initialize digest signing context: %w", errorFromErrorQueue())
 		}
 
 		// evp signatures are 64 bytes
-		sig := make([]byte, 64)
-		var siglen C.size_t = 64
+		var siglen C.size_t = C.size_t(C.EVP_PKEY_get_size(key.key))
+		sig := make([]byte, C.EVP_PKEY_get_size(key.key))
 		if C.EVP_DigestSign(ctx,
 			(*C.uchar)(unsafe.Pointer(&sig[0])),
 			&siglen,
 			(*C.uchar)(unsafe.Pointer(&data[0])),
 			C.size_t(len(data))) != 1 {
-			return nil, errorFromErrorQueue()
+			return nil, fmt.Errorf("failed to sign data with ED25519 key: %w", errorFromErrorQueue())
 		}
 
 		return sig[:siglen], nil
 	} else {
-		job, err := newDigestJob(*digest)
+		if digest == nil {
+			return nil, errors.New("signpkcs1v15: digest must not be null")
+		}
+		job, err := NewDigestJob(*digest)
 		if err != nil {
 			return nil, err
 		}
@@ -195,15 +200,15 @@ func (key *pKey) VerifyPKCS1v15(digest *Digest, data, sig []byte) error {
 		return errors.New("verifypkcs1v15: 0-length sig")
 	}
 
-	if key.KeyType() == KeyTypeED25519 {
+	if digest == nil {
 		// do ED specific one-shot sign
 
-		if digest != nil || len(data) == 0 {
-			return errors.New("verifypkcs1v15: 0-length data or non-null digest")
+		if len(data) == 0 {
+			return errors.New("verifypkcs1v15: 0-length data")
 		}
 
 		if C.EVP_DigestVerifyInit(ctx, nil, nil, nil, key.key) != 1 {
-			return errorFromErrorQueue()
+			return fmt.Errorf("failed to initialize digest verification context: %w", errorFromErrorQueue())
 		}
 
 		if C.EVP_DigestVerify(ctx,
@@ -211,13 +216,13 @@ func (key *pKey) VerifyPKCS1v15(digest *Digest, data, sig []byte) error {
 			C.size_t(len(sig)),
 			(*C.uchar)(unsafe.Pointer(&data[0])),
 			C.size_t(len(data))) != 1 {
-			return errorFromErrorQueue()
+			return fmt.Errorf("failed to verify data with ED25519 key: %w", errorFromErrorQueue())
 		}
 
 		return nil
 
 	} else {
-		job, err := newDigestJob(*digest)
+		job, err := NewDigestJob(*digest)
 		if err != nil {
 			return err
 		}
@@ -509,7 +514,7 @@ func newPKeyContextFromKey(key PrivateKey) (*pkeyCtx, error) {
 	}
 	ctx := C.EVP_PKEY_CTX_new(key.evpPKey(), nil)
 	if ctx == nil {
-		return nil, errors.New("failed to create pKeyCtx")
+		return nil, fmt.Errorf("failed to create pKeyCtx: %w", errorFromErrorQueue())
 	}
 	return &pkeyCtx{ctx, key.KeyType()}, nil
 }
@@ -519,7 +524,7 @@ func newPKeyContextFromKeyType(keyType KeyType) (*pkeyCtx, error) {
 	}
 	ctx := C.EVP_PKEY_CTX_new_id(C.int(keyType), nil)
 	if ctx == nil {
-		return nil, errors.New("failed to create pKeyCtx")
+		return nil, fmt.Errorf("failed to create pKeyCtx: %w", errorFromErrorQueue())
 	}
 	keyCtx := &pkeyCtx{ctx: ctx}
 	runtime.SetFinalizer(keyCtx, func(c *pkeyCtx) {

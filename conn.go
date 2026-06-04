@@ -27,7 +27,7 @@ import (
 	"unsafe"
 
 	"github.com/mattn/go-pointer"
-	"github.com/pexip/go-openssl/utils"
+	"github.com/mr-torgue/go-openssl/utils"
 )
 
 var (
