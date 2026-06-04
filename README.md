@@ -4,9 +4,13 @@ Forked from https://github.com/libp2p/openssl (archived)
 
 ---
 
-Please see http://godoc.org/github.com/pexip/go-openssl for more info
+Please see http://godoc.org/github.com/mr-torgue/go-openssl for more info
 
 ---
+
+> [!NOTE]
+> This version introduces functionality for generating signatures in a more flexible manner.
+> Look at openssl-patch.go for the main changes. Other than that, just some slight tweaks compared to the original.
 
 ### License
 
