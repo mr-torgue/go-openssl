@@ -173,14 +173,11 @@ func (key *pKey) SignPKCS1v15(digest *Digest, data []byte) ([]byte, error) {
 			&siglen,
 			(*C.uchar)(unsafe.Pointer(&data[0])),
 			C.size_t(len(data))) != 1 {
-			return nil, fmt.Errorf("failed to sign data with ED25519 key: %w", errorFromErrorQueue())
+			return nil, fmt.Errorf("failed to sign data with key (without digest): %w", errorFromErrorQueue())
 		}
 
 		return sig[:siglen], nil
 	} else {
-		if digest == nil {
-			return nil, errors.New("signpkcs1v15: digest must not be null")
-		}
 		job, err := NewDigestJob(*digest)
 		if err != nil {
 			return nil, err
@@ -216,7 +213,7 @@ func (key *pKey) VerifyPKCS1v15(digest *Digest, data, sig []byte) error {
 			C.size_t(len(sig)),
 			(*C.uchar)(unsafe.Pointer(&data[0])),
 			C.size_t(len(data))) != 1 {
-			return fmt.Errorf("failed to verify data with ED25519 key: %w", errorFromErrorQueue())
+			return fmt.Errorf("failed to verify data with key (without digest): %w", errorFromErrorQueue())
 		}
 
 		return nil

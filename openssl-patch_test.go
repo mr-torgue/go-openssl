@@ -479,6 +479,26 @@ func TestKeySignatureSize(t *testing.T) {
 		PrivSize  int
 		SigSize   int
 	}{"P521_FALCON1024", priv, err, 1930, 2532, 1423})
+	// mldsa44
+	priv, err = GenerateKey("mldsa44")
+	keyResults = append(keyResults, struct {
+		Algorithm string
+		PrivKey   PrivateKey
+		Err       error
+		PubSize   int
+		PrivSize  int
+		SigSize   int
+	}{"mldsa44", priv, err, 1312, 2560, 2420})
+	// mldsa44
+	priv, err = GenerateKey("sphincssha2128ssimple")
+	keyResults = append(keyResults, struct {
+		Algorithm string
+		PrivKey   PrivateKey
+		Err       error
+		PubSize   int
+		PrivSize  int
+		SigSize   int
+	}{"sphincssha2128ssimple", priv, err, 32, 64, 7856})
 
 	digest, _ := GetDigestByName("sha256", true)
 	n := 10
@@ -489,7 +509,13 @@ func TestKeySignatureSize(t *testing.T) {
 			// Process each key with each digest
 			require.Nil(t, keyResult.Err, fmt.Sprintf("Err should be nil for %s", keyResult.Algorithm))
 			require.NotNil(t, keyResult.PrivKey, fmt.Sprintf("PrivKey should not be nil for %s", keyResult.Algorithm))
-			signature, err := keyResult.PrivKey.SignPKCS1v15(digest, data)
+			var signature []byte
+			var err error
+			if keyResult.Algorithm == "mldsa44" {
+				signature, err = keyResult.PrivKey.SignPKCS1v15(nil, data)
+			} else {
+				signature, err = keyResult.PrivKey.SignPKCS1v15(digest, data)
+			}
 			require.Nil(t, err, fmt.Sprintf("Signature err should be nil for %s", keyResult.Algorithm))
 			require.NotNil(t, signature, fmt.Sprintf("signature should not be nil for %s", keyResult.Algorithm))
 			//assert.Equal(t, keyResult.SigSize, len(signature), fmt.Sprintf("Signature lengths should match for %s", keyResult.Algorithm))
@@ -638,6 +664,46 @@ func TestGenerateSignVerify(t *testing.T) {
 		PrivKey   PrivateKey
 		Err       error
 	}{"ED25519", priv, err})
+
+	// mldsa44 key generation
+	priv, err = GenerateKey("mldsa44")
+	keyResultsWithoutDigest = append(keyResultsWithoutDigest, struct {
+		Algorithm string
+		PrivKey   PrivateKey
+		Err       error
+	}{"mldsa44", priv, err})
+
+	// p256_mldsa44 key generation
+	priv, err = GenerateKey("p256_mldsa44")
+	keyResultsWithoutDigest = append(keyResultsWithoutDigest, struct {
+		Algorithm string
+		PrivKey   PrivateKey
+		Err       error
+	}{"p256_mldsa44", priv, err})
+
+	// p521_falconpadded1024 key generation
+	priv, err = GenerateKey("p521_falconpadded1024")
+	keyResultsWithoutDigest = append(keyResultsWithoutDigest, struct {
+		Algorithm string
+		PrivKey   PrivateKey
+		Err       error
+	}{"P521_FALCON1024", priv, err})
+
+	// sphincssha2128ssimple key generation
+	priv, err = GenerateKey("sphincssha2128ssimple")
+	keyResultsWithoutDigest = append(keyResultsWithoutDigest, struct {
+		Algorithm string
+		PrivKey   PrivateKey
+		Err       error
+	}{"sphincssha2128ssimple", priv, err})
+
+	// p256_sphincssha2128ssimple key generation
+	priv, err = GenerateKey("p256_sphincssha2128ssimple")
+	keyResultsWithoutDigest = append(keyResultsWithoutDigest, struct {
+		Algorithm string
+		PrivKey   PrivateKey
+		Err       error
+	}{"p256_sphincssha2128ssimple", priv, err})
 
 	for i := 0; i < n; i++ {
 		data := make([]byte, 10+rand.Intn(91))
