@@ -26,12 +26,20 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"sync"
 	"unsafe"
 )
 
 var (
 	ErrEmptyBlock = errors.New("empty block")
 	ErrLoadingKey = errors.New("failed loading private key")
+	// pkeySerialize serialises finaliser-driven EVP_PKEY_CTX frees against
+	// in-flight key generation. Freeing an EVP_PKEY_CTX from the GC's
+	// finaliser thread while another goroutine is inside EVP_PKEY_generate
+	// corrupts the provider dispatch (observed as jumps through destroyed
+	// dispatch tables / SIGSEGV and as key material corruption), so frees and
+	// generates must not overlap.
+	pkeySerialize sync.Mutex
 )
 
 type KeyType int
@@ -174,17 +182,17 @@ func (key *pKey) BaseType() NID {
 // ignored; opts is only used to select the digest function.
 // Currently only support for PKCS V1.5.
 func (key *pKey) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
-	return key.SignPKCS1v15(rand, digest, opts)
+	return key.signPKCS1v15(rand, digest, opts)
 }
 
-// SignPKCS1v15 signs the digest using PKCS1.15. rand is currently
+// signPKCS1v15 signs the digest using PKCS1.15. rand is currently
 // ignored. If opts indicates a hash function, the digest is treated as
 // pre-hashed output of that function (as per the crypto.Signer contract);
 // otherwise the digest is treated as the raw message, which is used by
 // signature schemes without an intermediate digest (e.g. ED25519).
-func (key *pKey) SignPKCS1v15(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+func (key *pKey) signPKCS1v15(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	if len(digest) == 0 {
-		return nil, errors.New("signpkcs1v15: 0-length digest")
+		return nil, errors.New("signPKCS1v15: 0-length digest")
 	}
 	if key.signsPrehashedInput() {
 		md, err := digestMethodFromCryptoHash(opts)
@@ -192,7 +200,7 @@ func (key *pKey) SignPKCS1v15(rand io.Reader, digest []byte, opts crypto.SignerO
 			return nil, err
 		}
 		if md == nil {
-			return nil, errors.New("signpkcs1v15: digest scheme requires opts with a hash function")
+			return nil, errors.New("signPKCS1v15: digest scheme requires opts with a hash function")
 		}
 		return key.signPrehashed(digest, md)
 	}
@@ -269,14 +277,14 @@ func (key *pKey) signPrehashed(digest []byte, md *C.EVP_MD) ([]byte, error) {
 // SignWithDigest signs the data using PKCS1.15, hashing the data with the
 // provided digest.
 func (key *pKey) SignWithDigest(digest *Digest, data []byte) ([]byte, error) {
-	return key.SignPKCS1v15WithDigest(digest, data)
+	return key.signPKCS1v15WithDigest(digest, data)
 }
 
-// SignPKCS1v15WithDigest signs the data using PKCS1.15, hashing the data
+// signPKCS1v15WithDigest signs the data using PKCS1.15, hashing the data
 // with the provided digest.
-func (key *pKey) SignPKCS1v15WithDigest(digest *Digest, data []byte) ([]byte, error) {
+func (key *pKey) signPKCS1v15WithDigest(digest *Digest, data []byte) ([]byte, error) {
 	if digest == nil {
-		return key.SignPKCS1v15(nil, data, nil)
+		return key.signPKCS1v15(nil, data, nil)
 	}
 
 	job, err := NewDigestJob(*digest)
@@ -290,30 +298,30 @@ func (key *pKey) SignPKCS1v15WithDigest(digest *Digest, data []byte) ([]byte, er
 }
 
 func (key *pKey) Verify(digest, sig []byte, opts crypto.SignerOpts) error {
-	return key.VerifyPKCS1v15(digest, sig, opts)
+	return key.verifyPKCS1v15(digest, sig, opts)
 }
 
-// VerifyPKCS1v15 verifies the signature using PKCS1.5. The verification
+// verifyPKCS1v15 verifies the signature using PKCS1.5. The verification
 // assumes that data is pre-hashed
-func (key *pKey) VerifyPKCS1v15(digest, sig []byte, opts crypto.SignerOpts) error {
+func (key *pKey) verifyPKCS1v15(digest, sig []byte, opts crypto.SignerOpts) error {
 	if len(sig) == 0 {
-		return errors.New("verifypkcs1v15: 0-length sig")
+		return errors.New("verifyPKCS1v15: 0-length sig")
 	}
 	if key.signsPrehashedInput() {
 		if len(digest) == 0 {
-			return errors.New("verifypkcs1v15: 0-length digest")
+			return errors.New("verifyPKCS1v15: 0-length digest")
 		}
 		md, err := digestMethodFromCryptoHash(opts)
 		if err != nil {
 			return err
 		}
 		if md == nil {
-			return errors.New("verifypkcs1v15: digest scheme requires opts with a hash function")
+			return errors.New("verifyPKCS1v15: digest scheme requires opts with a hash function")
 		}
 		return key.verifyPrehashed(digest, sig, md)
 	}
 	if len(digest) == 0 {
-		return errors.New("verifypkcs1v15: 0-length data")
+		return errors.New("verifyPKCS1v15: 0-length data")
 	}
 	return key.verifyMessage(digest, sig)
 }
@@ -371,10 +379,10 @@ func (key *pKey) verifyPrehashed(data, sig []byte, md *C.EVP_MD) error {
 }
 
 func (key *pKey) VerifyWithDigest(digest *Digest, data, sig []byte) error {
-	return key.VerifyPKCS1v15WithDigest(digest, data, sig)
+	return key.verifyPKCS1v15WithDigest(digest, data, sig)
 }
 
-func (key *pKey) VerifyPKCS1v15WithDigest(digest *Digest, data, sig []byte) error {
+func (key *pKey) verifyPKCS1v15WithDigest(digest *Digest, data, sig []byte) error {
 
 	if digest == nil {
 		return key.Verify(data, sig, nil)
@@ -576,13 +584,13 @@ type pkeyCtx struct {
 	keyID KeyType
 }
 type pkeyGenCtx struct {
-	pkeyCtx
+	*pkeyCtx
 }
 type pkeyParamGenCtx struct {
-	pkeyCtx
+	*pkeyCtx
 }
 type pkeyDeriveCtx struct {
-	pkeyCtx
+	*pkeyCtx
 }
 
 func (p *pkeyCtx) evpCtx() *C.EVP_PKEY_CTX {
@@ -616,6 +624,8 @@ func (p *pkeyCtx) generate() (PrivateKey, error) {
 	if err := ensureErrorQueueIsClear(); err != nil {
 		return nil, fmt.Errorf("failed generating PrivateKey: %w", err)
 	}
+	pkeySerialize.Lock()
+	defer pkeySerialize.Unlock()
 	var key *C.EVP_PKEY
 	if int(C.EVP_PKEY_generate(p.ctx, &key)) != 1 {
 		return nil, fmt.Errorf("failing generating PrivateKey: %w", errorFromErrorQueue())
@@ -674,7 +684,7 @@ func newPKeyContextFromKey(key PrivateKey) (*pkeyCtx, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("failed to create pKeyCtx: %w", errorFromErrorQueue())
 	}
-	return &pkeyCtx{ctx, key.KeyType()}, nil
+	return &pkeyCtx{ctx: ctx, keyID: key.KeyType()}, nil
 }
 func newPKeyContextFromKeyType(keyType KeyType) (*pkeyCtx, error) {
 	if err := ensureErrorQueueIsClear(); err != nil {
@@ -687,7 +697,9 @@ func newPKeyContextFromKeyType(keyType KeyType) (*pkeyCtx, error) {
 	keyCtx := &pkeyCtx{ctx: ctx}
 	runtime.SetFinalizer(keyCtx, func(c *pkeyCtx) {
 		if c.ctx != nil {
+			pkeySerialize.Lock()
 			C.EVP_PKEY_CTX_free(c.ctx)
+			pkeySerialize.Unlock()
 			c.ctx = nil
 		}
 	})
@@ -705,7 +717,7 @@ func NewPKeyGenerationContextFromKey(key PrivateKey) (PrivateKeyGenerationContex
 	if int(C.EVP_PKEY_keygen_init(ctx.evpCtx())) != 1 {
 		return nil, fmt.Errorf("failed initialise keygen: %w", errorFromErrorQueue())
 	}
-	return &pkeyGenCtx{*ctx}, nil
+	return &pkeyGenCtx{ctx}, nil
 }
 func NewPKeyGenerationContextFromKeyType(keyType KeyType) (PrivateKeyGenerationContext, error) {
 	ctx, err := newPKeyContextFromKeyType(keyType)
@@ -718,7 +730,7 @@ func NewPKeyGenerationContextFromKeyType(keyType KeyType) (PrivateKeyGenerationC
 	if int(C.EVP_PKEY_keygen_init(ctx.evpCtx())) != 1 {
 		return nil, fmt.Errorf("failed initialise keygen: %w", errorFromErrorQueue())
 	}
-	return &pkeyGenCtx{*ctx}, nil
+	return &pkeyGenCtx{ctx}, nil
 }
 
 func NewPKeyParamGenerationCtx(keyID KeyType) (PrivateKeyParamGenerationContext, error) {
@@ -732,7 +744,7 @@ func NewPKeyParamGenerationCtx(keyID KeyType) (PrivateKeyParamGenerationContext,
 	if int(C.EVP_PKEY_paramgen_init(ctx.evpCtx())) != 1 {
 		return nil, fmt.Errorf("failed initialise paramgen: %w", errorFromErrorQueue())
 	}
-	return &pkeyParamGenCtx{*ctx}, nil
+	return &pkeyParamGenCtx{ctx}, nil
 }
 
 func NewPKeyDeriveContextFromKey(key PrivateKey) (PrivateKeyDeriveContext, error) {
@@ -746,7 +758,7 @@ func NewPKeyDeriveContextFromKey(key PrivateKey) (PrivateKeyDeriveContext, error
 	if int(C.EVP_PKEY_derive_init(ctx.evpCtx())) != 1 {
 		return nil, fmt.Errorf("failed initialise derive: %w", errorFromErrorQueue())
 	}
-	return &pkeyDeriveCtx{*ctx}, nil
+	return &pkeyDeriveCtx{ctx}, nil
 }
 
 // GenerateRSAKey generates a new RSA private key with an exponent of 3.

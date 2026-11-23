@@ -576,7 +576,7 @@ func NewPKeyGenerationContextFromName(name string) (PrivateKeyGenerationContext,
 	if int(C.EVP_PKEY_keygen_init(ctx.evpCtx())) != 1 {
 		return nil, fmt.Errorf("failed initialise keygen: %w", errorFromErrorQueue())
 	}
-	return &pkeyGenCtx{*ctx}, nil
+	return &pkeyGenCtx{ctx}, nil
 }
 
 // GenerateKey creates a key based on the provided name string.

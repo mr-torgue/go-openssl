@@ -29,7 +29,9 @@ import (
 	"encoding/hex"
 	pem_pkg "encoding/pem"
 	"os"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -688,4 +690,183 @@ func TestMarshalEd25519(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestSetRSAKeygenPubExpLifetime is a regression test for a use-after-free:
+// the public exponent BIGNUM handed to OpenSSL must stay alive until
+// EVP_PKEY_generate has run, even under GC pressure between setting the
+// exponent and generating the key. On affected builds this test crashes
+// with SIGSEGV inside EVP_PKEY_generate instead of failing cleanly.
+func TestSetRSAKeygenPubExpLifetime(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 32; i++ {
+		ctx, err := NewPKeyGenerationContextFromKeyType(KeyTypeRSA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = ctx.SetRSAKeygenBits(1024); err != nil {
+			t.Fatal(err)
+		}
+		if err = ctx.SetRSAKeygenPubExp(65537); err != nil {
+			t.Fatal(err)
+		}
+		runtime.GC() // force finalisers into the crash window
+		time.Sleep(time.Millisecond)
+		key, err := ctx.Generate()
+		if err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		if key.KeyType() != KeyTypeRSA {
+			t.Fatalf("iteration %d: expected RSA key, got %v", i, key.KeyType())
+		}
+	}
+}
+
+// TestKeygenContextsSurviveGC is a regression test for the use-after-free
+// where the pkeyGenCtx/pkeyParamGenCtx/pkeyDeriveCtx wrappers embedded the
+// pkeyCtx by value: the heap-allocated pkeyCtx carrying the finaliser that
+// frees the C EVP_PKEY_CTX became unreachable as soon as the constructors
+// returned, so a GC cycle before the first use left the wrapper with a
+// dangling context pointer. Each subtest forces the garbage collector into
+// the window between construction and use; on affected builds these
+// subtests crash inside OpenSSL instead of failing cleanly.
+func TestKeygenContextsSurviveGC(t *testing.T) {
+	t.Parallel()
+
+	forceGC := func() {
+		// finalisers run on a dedicated goroutine and may need a second
+		// collection cycle to actually fire
+		runtime.GC()
+		time.Sleep(time.Millisecond)
+		runtime.GC()
+		time.Sleep(time.Millisecond)
+	}
+
+	t.Run("KeygenFromKeyType", func(t *testing.T) {
+		t.Parallel()
+		for i := 0; i < 8; i++ {
+			ctx, err := NewPKeyGenerationContextFromKeyType(KeyTypeRSA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			forceGC()
+			if err = ctx.SetRSAKeygenBits(1024); err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+			key, err := ctx.Generate()
+			if err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+			if key.KeyType() != KeyTypeRSA {
+				t.Fatalf("iteration %d: expected RSA key, got %v", i, key.KeyType())
+			}
+		}
+	})
+
+	t.Run("KeygenFromKey", func(t *testing.T) {
+		t.Parallel()
+		template, err := GenerateECKey(Prime256v1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 8; i++ {
+			ctx, err := NewPKeyGenerationContextFromKey(template)
+			if err != nil {
+				t.Fatal(err)
+			}
+			forceGC()
+			key, err := ctx.Generate()
+			if err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+			if key.KeyType() != KeyTypeEC {
+				t.Fatalf("iteration %d: expected EC key, got %v", i, key.KeyType())
+			}
+		}
+	})
+
+	t.Run("ParamGeneration", func(t *testing.T) {
+		t.Parallel()
+		for i := 0; i < 8; i++ {
+			ctx, err := NewPKeyParamGenerationCtx(KeyTypeEC)
+			if err != nil {
+				t.Fatal(err)
+			}
+			forceGC()
+			if err = ctx.SetECParamGenCurveNID(Prime256v1); err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+			params, err := ctx.Generate()
+			if err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+			if params.KeyType() != KeyTypeEC {
+				t.Fatalf("iteration %d: expected EC params, got %v", i, params.KeyType())
+			}
+		}
+	})
+
+	t.Run("Derive", func(t *testing.T) {
+		t.Parallel()
+		priv, err := GenerateECKey(Prime256v1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		peer, err := GenerateECKey(Prime256v1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 8; i++ {
+			ctx, err := NewPKeyDeriveContextFromKey(priv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			forceGC()
+			if err = ctx.SetPeer(peer); err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+			secret, err := ctx.Derive()
+			if err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+			if len(secret) == 0 {
+				t.Fatalf("iteration %d: derived empty secret", i)
+			}
+			// same two keys must always derive the same shared secret
+			again, err := NewPKeyDeriveContextFromKey(priv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = again.SetPeer(peer); err != nil {
+				t.Fatal(err)
+			}
+			other, err := again.Derive()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(secret, other) {
+				t.Fatalf("iteration %d: derive is not deterministic across contexts", i)
+			}
+		}
+	})
+
+	t.Run("PubExpBignumLifetime", func(t *testing.T) {
+		t.Parallel()
+		for i := 0; i < 8; i++ {
+			key, err := GenerateRSAKeyWithExponent(1024, 65537)
+			if err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+			forceGC()
+			pub := key.Public().(PublicKey)
+			hashed := sha256.Sum256([]byte("the quick brown fox"))
+			sig, err := key.Sign(rand.Reader, hashed[:], crypto.SHA256)
+			if err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+			if err = pub.Verify(hashed[:], sig, crypto.SHA256); err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+		}
+	})
 }
