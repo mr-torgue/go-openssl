@@ -1,6 +1,6 @@
 module github.com/mr-torgue/go-openssl
 
-go 1.25.0
+go 1.27.4
 
 require (
 	github.com/hashicorp/go-multierror v1.1.1

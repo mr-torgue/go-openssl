@@ -18,6 +18,7 @@ package openssl
 import "C"
 
 import (
+	"crypto"
 	"errors"
 	"fmt"
 	"runtime"
@@ -201,4 +202,33 @@ func GetDigestByNid(nid NID, allowNonFIPS bool) (*Digest, error) {
 		return nil, err
 	}
 	return GetDigestByName(sn, allowNonFIPS)
+}
+
+// for converting go native hash algorithms to openssl primitives
+var hashToEVPMD = map[crypto.Hash]func() *C.EVP_MD{
+	crypto.MD4:      func() *C.EVP_MD { return C.EVP_md4() },
+	crypto.MD5:      func() *C.EVP_MD { return C.EVP_md5() },
+	crypto.SHA1:     func() *C.EVP_MD { return C.EVP_sha1() },
+	crypto.SHA224:   func() *C.EVP_MD { return C.EVP_sha224() },
+	crypto.SHA256:   func() *C.EVP_MD { return C.EVP_sha256() },
+	crypto.SHA384:   func() *C.EVP_MD { return C.EVP_sha384() },
+	crypto.SHA512:   func() *C.EVP_MD { return C.EVP_sha512() },
+	crypto.SHA3_224: func() *C.EVP_MD { return C.EVP_sha3_224() },
+	crypto.SHA3_256: func() *C.EVP_MD { return C.EVP_sha3_256() },
+	crypto.SHA3_384: func() *C.EVP_MD { return C.EVP_sha3_384() },
+	crypto.SHA3_512: func() *C.EVP_MD { return C.EVP_sha3_512() },
+}
+
+func digestMethodFromCryptoHash(opts crypto.SignerOpts) (*C.EVP_MD, error) {
+	if opts == nil {
+		return nil, nil
+	}
+	hash := opts.HashFunc()
+	if hash == 0 {
+		return nil, nil
+	}
+	if fn, ok := hashToEVPMD[hash]; ok {
+		return fn(), nil
+	}
+	return nil, fmt.Errorf("unsupported hash function: crypto.Hash(%d)", int(hash))
 }

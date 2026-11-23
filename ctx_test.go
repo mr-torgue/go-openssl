@@ -76,7 +76,8 @@ func TestCtxSetGroupsList(t *testing.T) {
 	ctx, _ := NewCtx()
 
 	t.Run("invalid group", func(t *testing.T) {
-		err := ctx.SetGroupsList("")
+		// note: empty list resets to default so that is valid (just use wrong names to test)
+		err := ctx.SetGroupsList("bogus")
 		if err == nil {
 			t.Error("SetGroupsList() did not return expected error")
 			return

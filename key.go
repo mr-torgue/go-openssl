@@ -64,10 +64,11 @@ const (
 	KeyTypeED448    KeyType = C.EVP_PKEY_ED448
 )
 
+// Note: Sign and Verify functions assume pre-signed data, if you want to sign and verify raw data, use the WithDigest functions.
 type PublicKey interface {
-	// VerifyPKCS1v15 verifies the data signature using PKCS1.15
-	VerifyPKCS1v15(data, sig []byte) error
-	VerifyPKCS1v15WithDigest(digest *Digest, data, sig []byte) error
+	// Verify and VerifyWithDigest verify a signature without and with given digest (PCKS v1.5 for now only)
+	Verify(digest, sig []byte, opts crypto.SignerOpts) error
+	VerifyWithDigest(digest *Digest, data, sig []byte) error
 
 	// MarshalPKIXPublicKeyPEM converts the public key to PEM-encoded PKIX format
 	MarshalPKIXPublicKeyPEM() (pemBlock []byte, err error)
@@ -102,7 +103,7 @@ type PrivateKey interface {
 
 	// Sign and SignWithDigest signs the data using PKCS1.15 (for now)
 	Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) (signature []byte, err error)
-	SignWithDigest(*Digest, []byte) ([]byte, error)
+	SignWithDigest(digest *Digest, data []byte) (signature []byte, err error)
 
 	// MarshalPKCS1PrivateKeyPEM converts the private key to PEM-encoded PKCS1 format
 	MarshalPKCS1PrivateKeyPEM() (pemBlock []byte, err error)
@@ -182,25 +183,84 @@ func (key *pKey) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]
 // otherwise the digest is treated as the raw message, which is used by
 // signature schemes without an intermediate digest (e.g. ED25519).
 func (key *pKey) SignPKCS1v15(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
-	ctx := C.EVP_MD_CTX_new()
-	defer C.EVP_MD_CTX_free(ctx)
-
 	if len(digest) == 0 {
 		return nil, errors.New("signpkcs1v15: 0-length digest")
 	}
+	if key.signsPrehashedInput() {
+		md, err := digestMethodFromCryptoHash(opts)
+		if err != nil {
+			return nil, err
+		}
+		if md == nil {
+			return nil, errors.New("signpkcs1v15: digest scheme requires opts with a hash function")
+		}
+		return key.signPrehashed(digest, md)
+	}
+	return key.signMessage(digest)
+}
+
+// signsPrehashedInput reports whether the key's signature scheme signs an
+// already-computed digest.
+func (key *pKey) signsPrehashedInput() bool {
+	switch key.KeyType() {
+	case KeyTypeRSA, KeyTypeRSA2, KeyTypeRSAPSS,
+		KeyTypeDSA, KeyTypeDSA1, KeyTypeDSA2, KeyTypeDSA3, KeyTypeDSA4,
+		KeyTypeEC:
+		return true
+	}
+	return false
+}
+
+// signMessage signs the raw input with the one-shot EVP_DigestSign, the
+// only sign operation supported by message-based schemes such as ED25519
+// and FALCON.
+func (key *pKey) signMessage(digest []byte) ([]byte, error) {
+	ctx := C.EVP_MD_CTX_new()
+	defer C.EVP_MD_CTX_free(ctx)
 
 	if C.EVP_DigestSignInit(ctx, nil, nil, nil, key.key) != 1 {
 		return nil, fmt.Errorf("failed to initialize digest signing context: %w", errorFromErrorQueue())
 	}
 
 	var siglen C.size_t = C.size_t(C.EVP_PKEY_get_size(key.key))
-	sig := make([]byte, C.EVP_PKEY_get_size(key.key))
+	sig := make([]byte, siglen)
 	if C.EVP_DigestSign(ctx,
 		(*C.uchar)(unsafe.Pointer(&sig[0])),
 		&siglen,
 		(*C.uchar)(unsafe.Pointer(&digest[0])),
 		C.size_t(len(digest))) != 1 {
-		return nil, fmt.Errorf("failed to sign digest with key: %w", errorFromErrorQueue())
+		return nil, fmt.Errorf("failed to sign with key: %w", errorFromErrorQueue())
+	}
+
+	return sig[:siglen], nil
+}
+
+// signPrehashed signs an already-computed digest with EVP_PKEY_sign,
+// identifying the digest method so the scheme can wrap it appropriately
+// (e.g. a DigestInfo for RSA, DER-serialisation for ECDSA).
+func (key *pKey) signPrehashed(digest []byte, md *C.EVP_MD) ([]byte, error) {
+	ctx := C.EVP_PKEY_CTX_new(key.key, nil)
+	defer C.EVP_PKEY_CTX_free(ctx)
+	if ctx == nil {
+		return nil, fmt.Errorf("failed to create pkey context: %w", errorFromErrorQueue())
+	}
+
+	if C.EVP_PKEY_sign_init(ctx) != 1 {
+		return nil, fmt.Errorf("failed to initialization signing context: %w", errorFromErrorQueue())
+	}
+
+	if C.EVP_PKEY_CTX_set_signature_md(ctx, md) != 1 {
+		return nil, fmt.Errorf("failed to set signature digest: %w", errorFromErrorQueue())
+	}
+
+	var siglen C.size_t = C.size_t(C.EVP_PKEY_get_size(key.key))
+	sig := make([]byte, siglen)
+	if C.EVP_PKEY_sign(ctx,
+		(*C.uchar)(unsafe.Pointer(&sig[0])),
+		&siglen,
+		(*C.uchar)(unsafe.Pointer(&digest[0])),
+		C.size_t(len(digest))) != 1 {
+		return nil, fmt.Errorf("failed to sign with key: %w", errorFromErrorQueue())
 	}
 
 	return sig[:siglen], nil
@@ -216,7 +276,6 @@ func (key *pKey) SignWithDigest(digest *Digest, data []byte) ([]byte, error) {
 // with the provided digest.
 func (key *pKey) SignPKCS1v15WithDigest(digest *Digest, data []byte) ([]byte, error) {
 	if digest == nil {
-		// do ED specific one-shot sign
 		return key.SignPKCS1v15(nil, data, nil)
 	}
 
@@ -230,13 +289,41 @@ func (key *pKey) SignPKCS1v15WithDigest(digest *Digest, data []byte) ([]byte, er
 	return job.SignFinal(key)
 }
 
-func (key *pKey) VerifyPKCS1v15(data, sig []byte) error {
-	ctx := C.EVP_MD_CTX_new()
-	defer C.EVP_MD_CTX_free(ctx)
+func (key *pKey) Verify(digest, sig []byte, opts crypto.SignerOpts) error {
+	return key.VerifyPKCS1v15(digest, sig, opts)
+}
 
+// VerifyPKCS1v15 verifies the signature using PKCS1.5. The verification
+// assumes that data is pre-hashed
+func (key *pKey) VerifyPKCS1v15(digest, sig []byte, opts crypto.SignerOpts) error {
 	if len(sig) == 0 {
 		return errors.New("verifypkcs1v15: 0-length sig")
 	}
+	if key.signsPrehashedInput() {
+		if len(digest) == 0 {
+			return errors.New("verifypkcs1v15: 0-length digest")
+		}
+		md, err := digestMethodFromCryptoHash(opts)
+		if err != nil {
+			return err
+		}
+		if md == nil {
+			return errors.New("verifypkcs1v15: digest scheme requires opts with a hash function")
+		}
+		return key.verifyPrehashed(digest, sig, md)
+	}
+	if len(digest) == 0 {
+		return errors.New("verifypkcs1v15: 0-length data")
+	}
+	return key.verifyMessage(digest, sig)
+}
+
+// verifyMessage verifies the signature over the raw data with the one-shot
+// EVP_DigestVerify, the only verify operation supported by message-based
+// schemes such as ED25519 and FALCON.
+func (key *pKey) verifyMessage(digest, sig []byte) error {
+	ctx := C.EVP_MD_CTX_new()
+	defer C.EVP_MD_CTX_free(ctx)
 
 	if C.EVP_DigestVerifyInit(ctx, nil, nil, nil, key.key) != 1 {
 		return fmt.Errorf("failed to initialize digest verification context: %w", errorFromErrorQueue())
@@ -245,22 +332,52 @@ func (key *pKey) VerifyPKCS1v15(data, sig []byte) error {
 	if C.EVP_DigestVerify(ctx,
 		(*C.uchar)(unsafe.Pointer(&sig[0])),
 		C.size_t(len(sig)),
-		(*C.uchar)(unsafe.Pointer(&data[0])),
-		C.size_t(len(data))) != 1 {
+		(*C.uchar)(unsafe.Pointer(&digest[0])),
+		C.size_t(len(digest))) != 1 {
 		return fmt.Errorf("failed to verify data with key (without digest): %w", errorFromErrorQueue())
 	}
 
 	return nil
 }
 
-func (key *pKey) VerifyPKCS1v15WithDigest(digest *Digest, data, sig []byte) error {
-
-	if len(sig) == 0 {
-		return errors.New("verifypkcs1v15: 0-length sig")
+// verifyPrehashed verifies a signature over an already-computed digest
+// with EVP_PKEY_verify, identifying the digest method so the scheme can
+// check the appropriate wrapping (e.g. a DigestInfo for RSA,
+// DER-serialisation for ECDSA).
+func (key *pKey) verifyPrehashed(data, sig []byte, md *C.EVP_MD) error {
+	ctx := C.EVP_PKEY_CTX_new(key.key, nil)
+	defer C.EVP_PKEY_CTX_free(ctx)
+	if ctx == nil {
+		return fmt.Errorf("failed to create pkey context: %w", errorFromErrorQueue())
 	}
 
+	if C.EVP_PKEY_verify_init(ctx) != 1 {
+		return fmt.Errorf("failed to initialize verification context: %w", errorFromErrorQueue())
+	}
+
+	if C.EVP_PKEY_CTX_set_signature_md(ctx, md) != 1 {
+		return fmt.Errorf("failed to set signature digest: %w", errorFromErrorQueue())
+	}
+
+	if C.EVP_PKEY_verify(ctx,
+		(*C.uchar)(unsafe.Pointer(&sig[0])),
+		C.size_t(len(sig)),
+		(*C.uchar)(unsafe.Pointer(&data[0])),
+		C.size_t(len(data))) != 1 {
+		return fmt.Errorf("failed to verify with key: %w", errorFromErrorQueue())
+	}
+
+	return nil
+}
+
+func (key *pKey) VerifyWithDigest(digest *Digest, data, sig []byte) error {
+	return key.VerifyPKCS1v15WithDigest(digest, data, sig)
+}
+
+func (key *pKey) VerifyPKCS1v15WithDigest(digest *Digest, data, sig []byte) error {
+
 	if digest == nil {
-		return key.VerifyPKCS1v15(data, sig)
+		return key.Verify(data, sig, nil)
 	}
 
 	job, err := NewDigestJob(*digest)

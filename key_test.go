@@ -18,13 +18,20 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/mldsa"
+	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	pem_pkg "encoding/pem"
 	"os"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMarshal(t *testing.T) {
@@ -213,32 +220,228 @@ func TestSign(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = key.VerifyPKCS1v15WithDigest(digest, data, result)
+			err = key.VerifyWithDigest(digest, data, result)
 			if err != nil {
 				t.Fatal(err)
 			}
 		})
 	}
 
+	// test without digest
 	h := crypto.SHA256.New()
 	h.Write(data)
 	sig, err := key.Sign(nil, h.Sum(nil), nil)
-	if err != nil {
-		t.Fatal(err)
+	assert.NotNil(t, err, "err should not be nil because we did not provide a proper digest")
+	sig, err = key.Sign(nil, h.Sum(nil), crypto.SHA256)
+	assert.Nil(t, err, "err should be nil")
+
+	// should fail because we don't set opts
+	err = key.Verify(h.Sum(nil), sig, nil)
+	assert.NotNil(t, err, "should fail because we don't set opts")
+	err = key.Verify(h.Sum(nil), sig, crypto.SHA256)
+	assert.Nil(t, err, "should not fail")
+}
+
+// TestCrossVerifyOpenSSLSigns verifies OpenSSL-generated signatures with the
+// go standard library. The pre-hashed crypto.Signer path as well as the raw
+// data SignWithDigest path are tested for RSA, ECDSA, and ED25519.
+func TestCrossVerifyOpenSSLSigns(t *testing.T) {
+	t.Parallel()
+
+	data := []byte("the quick brown fox jumps over the lazy dog")
+	digest := sha256.Sum256(data)
+
+	parseStdPublic := func(t *testing.T, key PrivateKey) crypto.PublicKey {
+		der, err := key.MarshalPKIXPublicKeyDER()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub, err := x509.ParsePKIXPublicKey(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pub
 	}
-	if err = key.VerifyPKCS1v15(h.Sum(nil), sig); err != nil {
+
+	t.Run("RSA", func(t *testing.T) {
+		t.Parallel()
+		key, err := GenerateRSAKey(2048)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub := parseStdPublic(t, key).(*rsa.PublicKey)
+
+		// pre-hashed crypto.Signer path
+		sig, err := key.Sign(rand.Reader, digest[:], crypto.SHA256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest[:], sig); err != nil {
+			t.Fatalf("pre-hashed: %v", err)
+		}
+
+		sha256Digest, err := GetDigestByName("sha256", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sig, err = key.SignWithDigest(sha256Digest, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest[:], sig); err != nil {
+			t.Fatalf("SignWithDigest: %v", err)
+		}
+	})
+
+	t.Run("ECDSA", func(t *testing.T) {
+		t.Parallel()
+		key, err := GenerateECKey(Prime256v1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub := parseStdPublic(t, key).(*ecdsa.PublicKey)
+
+		sig, err := key.Sign(rand.Reader, digest[:], crypto.SHA256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ecdsa.VerifyASN1(pub, digest[:], sig) {
+			t.Fatal("pre-hashed: verification failed")
+		}
+
+		sha256Digest, err := GetDigestByName("sha256", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sig, err = key.SignWithDigest(sha256Digest, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ecdsa.VerifyASN1(pub, digest[:], sig) {
+			t.Fatal("SignWithDigest: verification failed")
+		}
+	})
+
+	t.Run("ED25519", func(t *testing.T) {
+		t.Parallel()
+		key, err := GenerateED25519Key()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub := parseStdPublic(t, key).(ed25519.PublicKey)
+
+		sig, err := key.Sign(rand.Reader, data, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ed25519.Verify(pub, data, sig) {
+			t.Fatal("verification failed")
+		}
+	})
+
+	t.Run("MLDSA44", func(t *testing.T) {
+		t.Parallel()
+		key, err := GenerateKey("mldsa44")
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub := parseStdPublic(t, key).(*mldsa.PublicKey)
+		pk, err := mldsa.NewPublicKey(mldsa.MLDSA44(), pub.Bytes())
+
+		sig, err := key.Sign(rand.Reader, data, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = mldsa.Verify(pk, data, sig, nil)
+		if err != nil {
+			t.Fatal("verification failed")
+		}
+	})
+}
+
+// TestCrossVerifyGoCryptoSigns verifies go standard library signatures with
+// OpenSSL.
+func TestCrossVerifyGoCryptoSigns(t *testing.T) {
+	t.Parallel()
+
+	data := []byte("the quick brown fox jumps over the lazy dog")
+	digest := sha256.Sum256(data)
+
+	importPublicKey := func(t *testing.T, pub crypto.PublicKey) PublicKey {
+		der, err := x509.MarshalPKIXPublicKey(pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		key, err := LoadPublicKeyFromDER(der)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+
+	sha256Digest, err := GetDigestByName("sha256", false)
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	h = crypto.MD5.New()
-	h.Write(data)
-	sig, err = key.Sign(nil, h.Sum(nil), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = key.VerifyPKCS1v15(h.Sum(nil), sig); err != nil {
-		t.Fatal(err)
-	}
+	t.Run("RSA", func(t *testing.T) {
+		t.Parallel()
+		stdPriv, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sig, err := rsa.SignPKCS1v15(rand.Reader, stdPriv, crypto.SHA256, digest[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub := importPublicKey(t, &stdPriv.PublicKey)
+		if err = pub.VerifyWithDigest(sha256Digest, data, sig); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("ECDSA", func(t *testing.T) {
+		t.Parallel()
+		stdPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sig, err := ecdsa.SignASN1(rand.Reader, stdPriv, digest[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		pub := importPublicKey(t, &stdPriv.PublicKey)
+		if err = pub.VerifyWithDigest(sha256Digest, data, sig); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("ED25519", func(t *testing.T) {
+		t.Parallel()
+		stdPub, stdPriv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sig := ed25519.Sign(stdPriv, data)
+		pub := importPublicKey(t, stdPub)
+		if err = pub.VerifyWithDigest(nil, data, sig); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("MLDSA44", func(t *testing.T) {
+		t.Parallel()
+		stdPriv, err := mldsa.GenerateKey(mldsa.MLDSA44())
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdPub := stdPriv.PublicKey()
+		sig, err := stdPriv.Sign(nil, data, nil)
+		pub := importPublicKey(t, stdPub)
+		if err = pub.VerifyWithDigest(nil, data, sig); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestSignEC(t *testing.T) {
@@ -261,7 +464,7 @@ func TestSignEC(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = key.VerifyPKCS1v15WithDigest(digest, data, sig); err != nil {
+			if err = key.VerifyWithDigest(digest, data, sig); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -270,11 +473,11 @@ func TestSignEC(t *testing.T) {
 	// test pre-signed sign and verify
 	h := crypto.SHA256.New()
 	h.Write(data)
-	sig, err := key.Sign(nil, h.Sum(nil), nil)
+	sig, err := key.Sign(nil, h.Sum(nil), crypto.SHA256)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = key.VerifyPKCS1v15(h.Sum(nil), sig); err != nil {
+	if err = key.Verify(h.Sum(nil), sig, crypto.SHA256); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -293,7 +496,7 @@ func TestSignED25519(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = key.VerifyPKCS1v15WithDigest(nil, data, sig)
+	err = key.VerifyWithDigest(nil, data, sig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +506,7 @@ func TestSignED25519(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = key.VerifyPKCS1v15(data, sig)
+	err = key.Verify(data, sig, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
