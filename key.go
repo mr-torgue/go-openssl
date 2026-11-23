@@ -127,7 +127,9 @@ type pKey struct {
 func pKeyFromKey(key *C.EVP_PKEY) *pKey {
 	pkey := &pKey{key: key}
 	runtime.SetFinalizer(pkey, func(p *pKey) {
+		pkeySerialize.Lock()
 		C.EVP_PKEY_free(p.key)
+		pkeySerialize.Unlock()
 	})
 	return pkey
 }

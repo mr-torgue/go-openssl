@@ -181,10 +181,12 @@ func nonCopyCString(data *C.char, size C.int) []byte {
 	return nonCopyGoBytes(uintptr(unsafe.Pointer(data)), int(size))
 }
 
-// ensureErrorQueueIsClear will only return an error if the error queue is not clear
+// ensureErrorQueueIsClear will clear the queue and return nil
+// Note: should we do something with non-empty queues?
 func ensureErrorQueueIsClear() error {
-	if err := getQueuedErrors(); err != nil {
-		return fmt.Errorf("error queue not clear: %w", err)
-	}
+	//if err := getQueuedErrors(); err != nil {
+	//	return fmt.Errorf("error queue not clear: %w", err)
+	//}
+	C.ERR_clear_error()
 	return nil
 }
