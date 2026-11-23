@@ -16,6 +16,7 @@ package openssl
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/tls"
@@ -208,15 +209,35 @@ func TestSign(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := key.SignPKCS1v15(digest, data)
+			result, err := key.SignWithDigest(digest, data)
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = key.VerifyPKCS1v15(digest, data, result)
+			err = key.VerifyPKCS1v15WithDigest(digest, data, result)
 			if err != nil {
 				t.Fatal(err)
 			}
 		})
+	}
+
+	h := crypto.SHA256.New()
+	h.Write(data)
+	sig, err := key.Sign(nil, h.Sum(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = key.VerifyPKCS1v15(h.Sum(nil), sig); err != nil {
+		t.Fatal(err)
+	}
+
+	h = crypto.MD5.New()
+	h.Write(data)
+	sig, err = key.Sign(nil, h.Sum(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = key.VerifyPKCS1v15(h.Sum(nil), sig); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -236,14 +257,25 @@ func TestSignEC(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			sig, err := key.SignPKCS1v15(digest, data)
+			sig, err := key.SignWithDigest(digest, data)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = key.VerifyPKCS1v15(digest, data, sig); err != nil {
+			if err = key.VerifyPKCS1v15WithDigest(digest, data, sig); err != nil {
 				t.Fatal(err)
 			}
 		})
+	}
+
+	// test pre-signed sign and verify
+	h := crypto.SHA256.New()
+	h.Write(data)
+	sig, err := key.Sign(nil, h.Sum(nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = key.VerifyPKCS1v15(h.Sum(nil), sig); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -256,12 +288,22 @@ func TestSignED25519(t *testing.T) {
 	}
 	data := []byte("the quick brown fox jumps over the lazy dog")
 
-	sig, err := key.SignPKCS1v15(nil, data)
+	sig, err := key.SignWithDigest(nil, data)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = key.VerifyPKCS1v15(nil, data, sig)
+	err = key.VerifyPKCS1v15WithDigest(nil, data, sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sig, err = key.Sign(nil, data, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = key.VerifyPKCS1v15(data, sig)
 	if err != nil {
 		t.Fatal(err)
 	}

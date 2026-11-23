@@ -512,9 +512,9 @@ func TestKeySignatureSize(t *testing.T) {
 			var signature []byte
 			var err error
 			if keyResult.Algorithm == "mldsa44" {
-				signature, err = keyResult.PrivKey.SignPKCS1v15(nil, data)
+				signature, err = keyResult.PrivKey.SignWithDigest(nil, data)
 			} else {
-				signature, err = keyResult.PrivKey.SignPKCS1v15(digest, data)
+				signature, err = keyResult.PrivKey.SignWithDigest(digest, data)
 			}
 			require.Nil(t, err, fmt.Sprintf("Signature err should be nil for %s", keyResult.Algorithm))
 			require.NotNil(t, signature, fmt.Sprintf("signature should not be nil for %s", keyResult.Algorithm))
@@ -623,10 +623,10 @@ func TestGenerateSignVerify(t *testing.T) {
 				// Process each key with each digest
 				require.Nil(t, keyResult.Err, fmt.Sprintf("Err should be nil for %s", keyResult.Algorithm))
 				require.NotNil(t, keyResult.PrivKey, fmt.Sprintf("PrivKey should not be nil for %s", keyResult.Algorithm))
-				signature, err := keyResult.PrivKey.SignPKCS1v15(digest, data)
+				signature, err := keyResult.PrivKey.SignWithDigest(digest, data)
 				require.Nil(t, err, fmt.Sprintf("Signature err should be nil for %s", keyResult.Algorithm))
 				require.NotNil(t, signature, fmt.Sprintf("signature should not be nil for %s", keyResult.Algorithm))
-				err = keyResult.PrivKey.VerifyPKCS1v15(digest, data, signature)
+				err = keyResult.PrivKey.VerifyPKCS1v15WithDigest(digest, data, signature)
 				require.Nil(t, err, fmt.Sprintf("Verification err should be nil for %s", keyResult.Algorithm))
 			}
 		}
@@ -641,10 +641,10 @@ func TestGenerateSignVerify(t *testing.T) {
 				// Process each key with each digest
 				require.Nil(t, keyResult.Err, fmt.Sprintf("Err should be nil for %s", keyResult.Algorithm))
 				require.NotNil(t, keyResult.PrivKey, fmt.Sprintf("PrivKey should not be nil for %s", keyResult.Algorithm))
-				signature, err := keyResult.PrivKey.SignPKCS1v15(digest, data)
+				signature, err := keyResult.PrivKey.SignWithDigest(digest, data)
 				require.Nil(t, err, fmt.Sprintf("Signature err should be nil for %s", keyResult.Algorithm))
 				require.NotNil(t, signature, fmt.Sprintf("signature should not be nil for %s", keyResult.Algorithm))
-				err = keyResult.PrivKey.VerifyPKCS1v15(digest, data, signature)
+				err = keyResult.PrivKey.VerifyPKCS1v15WithDigest(digest, data, signature)
 				require.Nil(t, err, fmt.Sprintf("Verification err should be nil for %s", keyResult.Algorithm))
 				assert.Nil(t, ensureErrorQueueIsClear(), "there should be no openssl errors")
 			}
@@ -711,10 +711,10 @@ func TestGenerateSignVerify(t *testing.T) {
 		for _, keyResult := range keyResultsWithoutDigest {
 			require.Nil(t, keyResult.Err, fmt.Sprintf("Err should be nil for %s", keyResult.Algorithm))
 			require.NotNil(t, keyResult.PrivKey, fmt.Sprintf("PrivKey should not be nil for %s", keyResult.Algorithm))
-			signature, err := keyResult.PrivKey.SignPKCS1v15(nil, data)
+			signature, err := keyResult.PrivKey.SignWithDigest(nil, data)
 			require.Nil(t, err, fmt.Sprintf("Signature err should be nil for %s", keyResult.Algorithm))
 			require.NotNil(t, signature, fmt.Sprintf("signature should not be nil for %s", keyResult.Algorithm))
-			err = keyResult.PrivKey.VerifyPKCS1v15(nil, data, signature)
+			err = keyResult.PrivKey.VerifyPKCS1v15WithDigest(nil, data, signature)
 			require.Nil(t, err, fmt.Sprintf("Verification err should be nil for %s", keyResult.Algorithm))
 			assert.Nil(t, ensureErrorQueueIsClear(), "there should be no openssl errors")
 		}
@@ -728,14 +728,14 @@ func TestGenerateSignVerify(t *testing.T) {
 	priv, err = GenerateKey("rsa3072_falconpadded512")
 	require.Nil(t, err, "Err should be nil for rsa3072_falconpadded512")
 	require.NotNil(t, priv, "PrivKey should not be nil for rsa3072_falconpadded512")
-	signature, err := priv.SignPKCS1v15(digest, data)
+	signature, err := priv.SignWithDigest(digest, data)
 	require.Nil(t, err, "Signature err should be nil for rsa3072_falconpadded512")
 	require.NotNil(t, signature, "signature should not be nil for rsa3072_falconpadded512")
-	err = priv.VerifyPKCS1v15(digest2, data, signature)
+	err = priv.VerifyPKCS1v15WithDigest(digest2, data, signature)
 	require.NotNil(t, err, "Verification should fail becuase digests are mismatched")
 
 	// test running without digest
-	//signature, err = priv.SignPKCS1v15(nil, data)
+	//signature, err = priv.SignWithDigest(nil, data)
 	//require.NotNil(t, err, "Signature err should not be nil because no digest is provided")
 
 }
@@ -797,7 +797,7 @@ func BenchmarkSignRSA(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		priv.SignPKCS1v15(digest, data)
+		priv.SignWithDigest(digest, data)
 	}
 }
 func BenchmarkSignECDSA(b *testing.B) {
@@ -806,7 +806,7 @@ func BenchmarkSignECDSA(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		priv.SignPKCS1v15(digest, data)
+		priv.SignWithDigest(digest, data)
 	}
 }
 func BenchmarkSignED25519(b *testing.B) {
@@ -814,7 +814,7 @@ func BenchmarkSignED25519(b *testing.B) {
 	require.NotNil(b, priv, "priv should not be nil")
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	for i := 0; i < b.N; i++ {
-		priv.SignPKCS1v15(nil, data)
+		priv.SignWithDigest(nil, data)
 	}
 }
 func BenchmarkSignFALCON512(b *testing.B) {
@@ -823,7 +823,7 @@ func BenchmarkSignFALCON512(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		priv.SignPKCS1v15(digest, data)
+		priv.SignWithDigest(digest, data)
 	}
 }
 func BenchmarkSignP256_FALCON512(b *testing.B) {
@@ -832,7 +832,7 @@ func BenchmarkSignP256_FALCON512(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		priv.SignPKCS1v15(digest, data)
+		priv.SignWithDigest(digest, data)
 	}
 }
 func BenchmarkSignRSA3072FALCON512(b *testing.B) {
@@ -841,7 +841,7 @@ func BenchmarkSignRSA3072FALCON512(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		priv.SignPKCS1v15(digest, data)
+		priv.SignWithDigest(digest, data)
 	}
 }
 func BenchmarkSignFALCON1024(b *testing.B) {
@@ -850,7 +850,7 @@ func BenchmarkSignFALCON1024(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		priv.SignPKCS1v15(digest, data)
+		priv.SignWithDigest(digest, data)
 	}
 }
 func BenchmarkSignP521FALCON1024(b *testing.B) {
@@ -859,7 +859,7 @@ func BenchmarkSignP521FALCON1024(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		priv.SignPKCS1v15(digest, data)
+		priv.SignWithDigest(digest, data)
 	}
 }
 
@@ -869,10 +869,10 @@ func BenchmarkVerifyRSA(b *testing.B) {
 	require.NotNil(b, priv, "priv should not be nil")
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
-	signature, _ := priv.SignPKCS1v15(digest, data)
+	signature, _ := priv.SignWithDigest(digest, data)
 	require.NotNil(b, signature, "signature should not be nil")
 	for i := 0; i < b.N; i++ {
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }
 func BenchmarkVerifyECDSA(b *testing.B) {
@@ -880,20 +880,20 @@ func BenchmarkVerifyECDSA(b *testing.B) {
 	require.NotNil(b, priv, "priv should not be nil")
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
-	signature, _ := priv.SignPKCS1v15(digest, data)
+	signature, _ := priv.SignWithDigest(digest, data)
 	require.NotNil(b, signature, "signature should not be nil")
 	for i := 0; i < b.N; i++ {
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }
 func BenchmarkVerifyED25519(b *testing.B) {
 	priv, _ := GenerateED25519Key()
 	require.NotNil(b, priv, "priv should not be nil")
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
-	signature, _ := priv.SignPKCS1v15(nil, data)
+	signature, _ := priv.SignWithDigest(nil, data)
 	require.NotNil(b, signature, "signature should not be nil")
 	for i := 0; i < b.N; i++ {
-		priv.VerifyPKCS1v15(nil, data, signature)
+		priv.VerifyPKCS1v15WithDigest(nil, data, signature)
 	}
 }
 func BenchmarkVerifyFALCON512(b *testing.B) {
@@ -901,10 +901,10 @@ func BenchmarkVerifyFALCON512(b *testing.B) {
 	require.NotNil(b, priv, "priv should not be nil")
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
-	signature, _ := priv.SignPKCS1v15(digest, data)
+	signature, _ := priv.SignWithDigest(digest, data)
 	require.NotNil(b, signature, "signature should not be nil")
 	for i := 0; i < b.N; i++ {
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }
 func BenchmarkVerifyP256FALCON512(b *testing.B) {
@@ -912,10 +912,10 @@ func BenchmarkVerifyP256FALCON512(b *testing.B) {
 	require.NotNil(b, priv, "priv should not be nil")
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
-	signature, _ := priv.SignPKCS1v15(digest, data)
+	signature, _ := priv.SignWithDigest(digest, data)
 	require.NotNil(b, signature, "signature should not be nil")
 	for i := 0; i < b.N; i++ {
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }
 func BenchmarkVerifyRSA3072FALCON512(b *testing.B) {
@@ -923,10 +923,10 @@ func BenchmarkVerifyRSA3072FALCON512(b *testing.B) {
 	require.NotNil(b, priv, "priv should not be nil")
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
-	signature, _ := priv.SignPKCS1v15(digest, data)
+	signature, _ := priv.SignWithDigest(digest, data)
 	require.NotNil(b, signature, "signature should not be nil")
 	for i := 0; i < b.N; i++ {
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }
 func BenchmarkVerifyFALCON1024(b *testing.B) {
@@ -934,10 +934,10 @@ func BenchmarkVerifyFALCON1024(b *testing.B) {
 	require.NotNil(b, priv, "priv should not be nil")
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
-	signature, _ := priv.SignPKCS1v15(digest, data)
+	signature, _ := priv.SignWithDigest(digest, data)
 	require.NotNil(b, signature, "signature should not be nil")
 	for i := 0; i < b.N; i++ {
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }
 func BenchmarkVerifyP521FALCON1024(b *testing.B) {
@@ -945,10 +945,10 @@ func BenchmarkVerifyP521FALCON1024(b *testing.B) {
 	require.NotNil(b, priv, "priv should not be nil")
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
-	signature, _ := priv.SignPKCS1v15(digest, data)
+	signature, _ := priv.SignWithDigest(digest, data)
 	require.NotNil(b, signature, "signature should not be nil")
 	for i := 0; i < b.N; i++ {
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }
 
@@ -959,9 +959,9 @@ func BenchmarkSignVerifyRSA(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		signature, _ := priv.SignPKCS1v15(digest, data)
+		signature, _ := priv.SignWithDigest(digest, data)
 		require.NotNil(b, signature, "signature should not be nil")
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }
 func BenchmarkSignVerifyECDSA(b *testing.B) {
@@ -970,9 +970,9 @@ func BenchmarkSignVerifyECDSA(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		signature, _ := priv.SignPKCS1v15(digest, data)
+		signature, _ := priv.SignWithDigest(digest, data)
 		require.NotNil(b, signature, "signature should not be nil")
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }
 func BenchmarkSignVerifyED25519(b *testing.B) {
@@ -980,9 +980,9 @@ func BenchmarkSignVerifyED25519(b *testing.B) {
 	require.NotNil(b, priv, "priv should not be nil")
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	for i := 0; i < b.N; i++ {
-		signature, _ := priv.SignPKCS1v15(nil, data)
+		signature, _ := priv.SignWithDigest(nil, data)
 		require.NotNil(b, signature, "signature should not be nil")
-		priv.VerifyPKCS1v15(nil, data, signature)
+		priv.VerifyPKCS1v15WithDigest(nil, data, signature)
 	}
 }
 func BenchmarkSignVerifyFALCON512(b *testing.B) {
@@ -991,9 +991,9 @@ func BenchmarkSignVerifyFALCON512(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		signature, _ := priv.SignPKCS1v15(digest, data)
+		signature, _ := priv.SignWithDigest(digest, data)
 		require.NotNil(b, signature, "signature should not be nil")
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }
 func BenchmarkSignVerifyP256FALCON512(b *testing.B) {
@@ -1002,9 +1002,9 @@ func BenchmarkSignVerifyP256FALCON512(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		signature, _ := priv.SignPKCS1v15(digest, data)
+		signature, _ := priv.SignWithDigest(digest, data)
 		require.NotNil(b, signature, "signature should not be nil")
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }
 func BenchmarkSignVerifyRSA3072FALCON512(b *testing.B) {
@@ -1013,9 +1013,9 @@ func BenchmarkSignVerifyRSA3072FALCON512(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		signature, _ := priv.SignPKCS1v15(digest, data)
+		signature, _ := priv.SignWithDigest(digest, data)
 		require.NotNil(b, signature, "signature should not be nil")
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }
 func BenchmarkSignVerifyFALCON1024(b *testing.B) {
@@ -1024,9 +1024,9 @@ func BenchmarkSignVerifyFALCON1024(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		signature, _ := priv.SignPKCS1v15(digest, data)
+		signature, _ := priv.SignWithDigest(digest, data)
 		require.NotNil(b, signature, "signature should not be nil")
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }
 func BenchmarkSignVerifyP521FALCON1024(b *testing.B) {
@@ -1035,8 +1035,8 @@ func BenchmarkSignVerifyP521FALCON1024(b *testing.B) {
 	data := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A}
 	digest, _ := GetDigestByName("sha256", true)
 	for i := 0; i < b.N; i++ {
-		signature, _ := priv.SignPKCS1v15(digest, data)
+		signature, _ := priv.SignWithDigest(digest, data)
 		require.NotNil(b, signature, "signature should not be nil")
-		priv.VerifyPKCS1v15(digest, data, signature)
+		priv.VerifyPKCS1v15WithDigest(digest, data, signature)
 	}
 }

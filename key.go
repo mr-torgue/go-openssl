@@ -21,6 +21,7 @@ package openssl
 import "C"
 
 import (
+	"crypto"
 	"errors"
 	"fmt"
 	"io"
@@ -65,7 +66,8 @@ const (
 
 type PublicKey interface {
 	// VerifyPKCS1v15 verifies the data signature using PKCS1.15
-	VerifyPKCS1v15(digest *Digest, data, sig []byte) error
+	VerifyPKCS1v15(data, sig []byte) error
+	VerifyPKCS1v15WithDigest(digest *Digest, data, sig []byte) error
 
 	// MarshalPKIXPublicKeyPEM converts the public key to PEM-encoded PKIX format
 	MarshalPKIXPublicKeyPEM() (pemBlock []byte, err error)
@@ -96,9 +98,11 @@ type PublicKey interface {
 
 type PrivateKey interface {
 	PublicKey
+	Public() crypto.PublicKey
 
-	// SignPKCS1v15 signs the data using PKCS1.15
-	SignPKCS1v15(*Digest, []byte) ([]byte, error)
+	// Sign and SignWithDigest signs the data using PKCS1.15 (for now)
+	Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) (signature []byte, err error)
+	SignWithDigest(*Digest, []byte) ([]byte, error)
 
 	// MarshalPKCS1PrivateKeyPEM converts the private key to PEM-encoded PKCS1 format
 	MarshalPKCS1PrivateKeyPEM() (pemBlock []byte, err error)
@@ -117,6 +121,20 @@ func pKeyFromKey(key *C.EVP_PKEY) *pKey {
 		C.EVP_PKEY_free(p.key)
 	})
 	return pkey
+}
+
+// Public returns the public key corresponding to the private key.
+// TODO: add testcases
+func (key *pKey) Public() crypto.PublicKey {
+	der, err := key.MarshalPKIXPublicKeyDER()
+	if err != nil {
+		return nil
+	}
+	pub, err := LoadPublicKeyFromDER(der)
+	if err != nil {
+		return nil
+	}
+	return pub
 }
 
 func (key *pKey) evpPKey() *C.EVP_PKEY { return key.key }
@@ -150,46 +168,69 @@ func (key *pKey) BaseType() NID {
 //
 //}
 
-func (key *pKey) SignPKCS1v15(digest *Digest, data []byte) ([]byte, error) {
+// Sign signs a digest with the private key, possibly using entropy from
+// rand. It satisfies the crypto.Signer interface. rand is currently
+// ignored; opts is only used to select the digest function.
+// Currently only support for PKCS V1.5.
+func (key *pKey) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	return key.SignPKCS1v15(rand, digest, opts)
+}
 
+// SignPKCS1v15 signs the digest using PKCS1.15. rand is currently
+// ignored. If opts indicates a hash function, the digest is treated as
+// pre-hashed output of that function (as per the crypto.Signer contract);
+// otherwise the digest is treated as the raw message, which is used by
+// signature schemes without an intermediate digest (e.g. ED25519).
+func (key *pKey) SignPKCS1v15(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	ctx := C.EVP_MD_CTX_new()
 	defer C.EVP_MD_CTX_free(ctx)
 
-	if digest == nil {
-		// do ED specific one-shot sign
-		if len(data) == 0 {
-			return nil, errors.New("signpkcs1v15: 0-length data or non-null digest")
-		}
-
-		if C.EVP_DigestSignInit(ctx, nil, nil, nil, key.key) != 1 {
-			return nil, fmt.Errorf("failed to initialize digest signing context: %w", errorFromErrorQueue())
-		}
-
-		// evp signatures are 64 bytes
-		var siglen C.size_t = C.size_t(C.EVP_PKEY_get_size(key.key))
-		sig := make([]byte, C.EVP_PKEY_get_size(key.key))
-		if C.EVP_DigestSign(ctx,
-			(*C.uchar)(unsafe.Pointer(&sig[0])),
-			&siglen,
-			(*C.uchar)(unsafe.Pointer(&data[0])),
-			C.size_t(len(data))) != 1 {
-			return nil, fmt.Errorf("failed to sign data with key (without digest): %w", errorFromErrorQueue())
-		}
-
-		return sig[:siglen], nil
-	} else {
-		job, err := NewDigestJob(*digest)
-		if err != nil {
-			return nil, err
-		}
-		if err = job.Update(data); err != nil {
-			return nil, err
-		}
-		return job.SignFinal(key)
+	if len(digest) == 0 {
+		return nil, errors.New("signpkcs1v15: 0-length digest")
 	}
+
+	if C.EVP_DigestSignInit(ctx, nil, nil, nil, key.key) != 1 {
+		return nil, fmt.Errorf("failed to initialize digest signing context: %w", errorFromErrorQueue())
+	}
+
+	var siglen C.size_t = C.size_t(C.EVP_PKEY_get_size(key.key))
+	sig := make([]byte, C.EVP_PKEY_get_size(key.key))
+	if C.EVP_DigestSign(ctx,
+		(*C.uchar)(unsafe.Pointer(&sig[0])),
+		&siglen,
+		(*C.uchar)(unsafe.Pointer(&digest[0])),
+		C.size_t(len(digest))) != 1 {
+		return nil, fmt.Errorf("failed to sign digest with key: %w", errorFromErrorQueue())
+	}
+
+	return sig[:siglen], nil
 }
 
-func (key *pKey) VerifyPKCS1v15(digest *Digest, data, sig []byte) error {
+// SignWithDigest signs the data using PKCS1.15, hashing the data with the
+// provided digest.
+func (key *pKey) SignWithDigest(digest *Digest, data []byte) ([]byte, error) {
+	return key.SignPKCS1v15WithDigest(digest, data)
+}
+
+// SignPKCS1v15WithDigest signs the data using PKCS1.15, hashing the data
+// with the provided digest.
+func (key *pKey) SignPKCS1v15WithDigest(digest *Digest, data []byte) ([]byte, error) {
+	if digest == nil {
+		// do ED specific one-shot sign
+		return key.SignPKCS1v15(nil, data, nil)
+	}
+
+	job, err := NewDigestJob(*digest)
+	if err != nil {
+		return nil, err
+	}
+	if err = job.Update(data); err != nil {
+		return nil, err
+	}
+	return job.SignFinal(key)
+}
+
+func (key *pKey) VerifyPKCS1v15(data, sig []byte) error {
 	ctx := C.EVP_MD_CTX_new()
 	defer C.EVP_MD_CTX_free(ctx)
 
@@ -197,37 +238,40 @@ func (key *pKey) VerifyPKCS1v15(digest *Digest, data, sig []byte) error {
 		return errors.New("verifypkcs1v15: 0-length sig")
 	}
 
-	if digest == nil {
-		// do ED specific one-shot sign
-
-		if len(data) == 0 {
-			return errors.New("verifypkcs1v15: 0-length data")
-		}
-
-		if C.EVP_DigestVerifyInit(ctx, nil, nil, nil, key.key) != 1 {
-			return fmt.Errorf("failed to initialize digest verification context: %w", errorFromErrorQueue())
-		}
-
-		if C.EVP_DigestVerify(ctx,
-			(*C.uchar)(unsafe.Pointer(&sig[0])),
-			C.size_t(len(sig)),
-			(*C.uchar)(unsafe.Pointer(&data[0])),
-			C.size_t(len(data))) != 1 {
-			return fmt.Errorf("failed to verify data with key (without digest): %w", errorFromErrorQueue())
-		}
-
-		return nil
-
-	} else {
-		job, err := NewDigestJob(*digest)
-		if err != nil {
-			return err
-		}
-		if err = job.Update(data); err != nil {
-			return err
-		}
-		return job.VerifyFinal(sig, key)
+	if C.EVP_DigestVerifyInit(ctx, nil, nil, nil, key.key) != 1 {
+		return fmt.Errorf("failed to initialize digest verification context: %w", errorFromErrorQueue())
 	}
+
+	if C.EVP_DigestVerify(ctx,
+		(*C.uchar)(unsafe.Pointer(&sig[0])),
+		C.size_t(len(sig)),
+		(*C.uchar)(unsafe.Pointer(&data[0])),
+		C.size_t(len(data))) != 1 {
+		return fmt.Errorf("failed to verify data with key (without digest): %w", errorFromErrorQueue())
+	}
+
+	return nil
+}
+
+func (key *pKey) VerifyPKCS1v15WithDigest(digest *Digest, data, sig []byte) error {
+
+	if len(sig) == 0 {
+		return errors.New("verifypkcs1v15: 0-length sig")
+	}
+
+	if digest == nil {
+		return key.VerifyPKCS1v15(data, sig)
+	}
+
+	job, err := NewDigestJob(*digest)
+	if err != nil {
+		return err
+	}
+	if err = job.Update(data); err != nil {
+		return err
+	}
+	return job.VerifyFinal(sig, key)
+
 }
 
 func (key *pKey) MarshalPKCS1PrivateKeyPEM() (pemBlock []byte, err error) {
